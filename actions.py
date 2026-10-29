@@ -933,6 +933,13 @@ REPLY_RE = (r"^((когда|если) (я )?(говорю|скажу|произ�
             r"(ты )?(отвечай|ответь|говори|скажи)( мне)?\s+(?P<r>.+)$")
 FORGET_REPLY_RE = r"^(забудь|удали|убери) (свой |мой |этот )?ответ (на|для) (фразу |слова |вопрос )?(?P<p>.+)$"
 
+# глаголы, с которых начинается команда — для looks_like_command()
+COMMAND_VERBS = re.compile(
+    r"^(открой|запусти|включи|выключи|закрой|сверни|переключи|поставь|"
+    r"нажми|напиши|набери|перемотай|найди|покажи|установи|перейди|"
+    r"заблокируй|перезагрузи|громче|тише|ярче|темнее)\b"
+)
+
 
 class Actions:
     def __init__(self, cfg, base_dir, ai, save=None):
@@ -1039,6 +1046,10 @@ class Actions:
             (r"скриншот|скрин экрана|сделай скрин", self.screenshot),
         ]
 
+
+    def looks_like_command(self, c):
+        return bool(COMMAND_VERBS.match(norm(c)))
+
     def handle(self, cmd):
         c = norm(cmd)
         cancel_ensure()  # новая команда — старая проверка «заиграло ли видео» больше не нужна
@@ -1126,10 +1137,12 @@ class Actions:
     def _handle_one(self, c):
         r = self.custom_reply(c)  # свои ответы — раньше команд и нейросети
         if r:
+            log.info("route hit: %r -> custom_reply", c)
             return r
         for pattern, fn in self.routes:
             m = re.search(pattern, c)
             if m:
+                log.info("route hit: %r -> %s", c, getattr(fn, "__name__", "?"))
                 try:
                     r = fn(c, m)
                 except Exception as e:
@@ -1137,6 +1150,7 @@ class Actions:
                     return Reply(line("error", e=e))
                 if r:
                     return r
+        log.info("route miss: %r", c)
         return None
 
     # --- свои сайты и программы ---
@@ -1238,6 +1252,11 @@ class Actions:
     def fallback(self, cmd, force_search=False):
         """Без ИИ: вопрос ищем в Google (если search_when_unsure не выключен), остальное — «не знаю команды»."""
         c = norm(cmd)
+        
+        # НЕ ищем в гугле обычную болтовню и приветствия
+        if re.match(r"^(как (дела|ты|жизнь|сам|сама|оно|настроение)|что (делаешь|нового)|привет|здравствуй|доброе утро|спокойной ночи|пока)\b", c):
+            return Reply(line("unknown")) # или можешь написать свой текст, например Reply("У меня всё отлично!")
+
         if force_search or re.match(r"^(что|кто|как|какой|какая|какое|какие|почему|зачем|сколько|где|когда|куда|"
                      r"откуда|чем|чей|расскажи|объясни|скажи)\b", c):
             if not self.cfg.get("search_when_unsure", True):

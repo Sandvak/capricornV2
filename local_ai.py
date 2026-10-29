@@ -10,20 +10,25 @@ import subprocess
 import time
 import urllib.request
 
-from persona import CHARACTER, SPEECH_RULES, user_context
+from persona import CHARACTER, SHORT_CHARACTER, SPEECH_RULES, user_context
 
 log = logging.getLogger("capri")
 URL = "http://127.0.0.1:11434"
 NO_WINDOW = 0x08000000
 SEARCH_MARK = "ПОИСК"
+COMMAND_MARK = "КОМАНДА"
 NO_THINKING = "Сразу дай готовый ответ от лица Капри. Без рассуждений, без анализа вопроса, без «пользователь хочет»."
 
-SYSTEM = f"""{CHARACTER}
+def build_system(model):
+    """Для моделей до 4b — короткий промпт: prefill в разы быстрее, а качества 4b всё равно не хватает
+    на длинную инструкцию."""
+    base = SHORT_CHARACTER if any(s in model for s in ("1.7b", ":4b", ":3b", ":2b", ":1b")) else CHARACTER
+    return f"""{base}
 
 {SPEECH_RULES}
 Отвечай на любые вопросы о науке, истории, технике, языке, о себе, советы и просьбы рассказать что-то.
 Только если вопрос про текущие события (погода сейчас, свежие новости, курсы валют, цены,
-результаты недавних матчей), ответь ровно одним словом: {SEARCH_MARK}"""
+результаты недавних матчей), ответь ровно одним словом: {SEARCH_MARK}."""
 
 FRESH = re.compile(r"погод|новост|курс (доллар|евро|рубл|валют|биткоин)|сколько стоит|цена|цены|"
                    r"счет матча|кто выиграл|расписани|пробк|сегодня в мире")
@@ -153,6 +158,7 @@ def pick_model(names):
 class LocalAI:
     def __init__(self, cfg):
         self.model = cfg.get("local_model", "qwen3:8b")
+        self.system = build_system(self.model)
         self.history = []
         self.on_model_change = None  # main записывает новую модель в config.json
 
@@ -195,6 +201,7 @@ class LocalAI:
                 return
             log.info("Модели %s нет, беру скачанную %s", self.model, other)
             self.model = other
+            self.system = build_system(other)
             if self.on_model_change:
                 self.on_model_change(other)
         try:
@@ -228,7 +235,7 @@ class LocalAI:
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
         self.history.append({"role": "user", "content": question})
         self.history = self.history[-6:]
-        messages = [{"role": "system", "content": SYSTEM + "\n" + user_context() + f"\nСейчас {now}."}] + self.history
+        messages = [{"role": "system", "content": self.system + "\n" + user_context() + f"\nСейчас {now}."}] + self.history
         try:
             answer = self._chat(messages)
             if FOREIGN.search(answer):  # Qwen иногда срывается на китайский — пробуем ещё раз
@@ -245,18 +252,19 @@ class LocalAI:
         answer = re.sub(r"[\U0001F000-\U0001FAFF☀-➿️]", "", answer)  # эмодзи
         answer = re.sub(r"\s+", " ", answer).strip()
         answer = answer[:1].upper() + answer[1:]
-        broken = len(answer) < 40 and not re.search(r"[.!?…]$", answer)
-        if not answer or broken or SEARCH_MARK in answer.upper()[:20]:
+        up = answer.upper().strip()
+        # Модель должна сказать ТОЛЬКО "КОМАНДА" или ТОЛЬКО "ПОИСК", 
+        # а не просто использовать эти слова в предложении.
+        if not answer or up == SEARCH_MARK or up == COMMAND_MARK:
+            log.info("=== OLLAMA ВЕРНУЛА: %r ===", answer)
             self.history.pop()
             return None
-        self.history.append({"role": "assistant", "content": answer})
-        return answer
 
     def chatter(self):
         """Короткая спонтанная реплика, когда Капри появляется сама. None — если модель недоступна."""
         try:
             text = self._chat([
-                {"role": "system", "content": SYSTEM + "\n" + user_context()},
+                {"role": "system", "content": self.system + "\n" + user_context()},
                 {"role": "user", "content":
                  "Ты сама решила ненадолго появиться на экране. Скажи одну короткую спонтанную фразу, "
                  f"до пятнадцати слов. Тема: {random.choice(CHATTER_TOPICS)}. "
@@ -271,7 +279,7 @@ class LocalAI:
     def summarize_report(self, report):
         try:
             return self._chat([
-                {"role": "system", "content": SYSTEM + "\n" + user_context()},
+                {"role": "system", "content": self.system + "\n" + user_context()},
                 {"role": "user", "content":
                  "Вот отчёт диагностики моего ПК. Скажи 2–4 предложения: общее состояние, главные "
                  "проблемы и что сделать. Безвредные ошибки вроде DistributedCOM не раздувай.\n\n"

@@ -627,15 +627,19 @@ class Capri(QObject):
         self.subtitle.emit("> " + cmd)
         self.reload_config_if_changed()
 
+        log.info("CMD in: %r", cmd)
         reply = self.actions.handle(cmd)
         if reply is not None and reply.action in ("mic_info", "mic_next"):
             reply = self.mic_command(reply.action)
         if reply is None:
-            if self.cfg.get("enable_ai") and self.ai.available:
-                reply = Reply(self.ai.ask(cmd), "answer")
+            log.info("CMD miss: %r", cmd)
+            if self.actions.looks_like_command(cmd):
+                reply = Reply(line("unknown"))
             else:
                 answer = self.local.ask(cmd) if self.local else None
-                reply = Reply(answer, "answer") if answer else self.actions.fallback(cmd, force_search=bool(self.local))
+                if not answer and self.cfg.get("enable_ai") and self.ai.available:
+                    answer = self.ai.ask(cmd)
+                reply = Reply(answer, "answer") if answer else self.actions.fallback(cmd)   
         if reply.action == "answer" and self.cfg.get("teleport_on_answer"):
             self.hop.emit()  # отвечает, скача по экрану красной молнией
         if reply.action == "wave":
